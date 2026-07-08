@@ -1,0 +1,29 @@
+result
+result-*
+# the kernel source tree (or a symlink to it) goes here; see README
+kernel/src
+kernel/cachyos-7.0.9-1*
+*.tar.zst
+.direnv/
+.tool/
+.np/
+# build scratch / logs
+.build*
+.ipxe-retry-*
+.vulkan-llama-*
+# boot-server deploy artifacts (regenerated per build; large binaries)
+bootsrv/http/initrd
+bootsrv/http/vmlinuz
+bootsrv/http/*.gguf
+bootsrv/nfs/
+bootsrv/*.efi
+bootsrv/ipxe-embed
+bootsrv/ipxe-safe
+bootsrv/ipxe-out
+bootsrv/http-access.log
+
+# boot-server scratch (lab-local; regenerated) - never publish
+bootsrv/
+
+# site-local config (host IPs, keys, model overrides) - never commit
+local.nix
