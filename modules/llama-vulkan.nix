@@ -24,24 +24,24 @@
 # The GPU-userspace enablement itself (mesa-26 RADV for gfx1013, vulkan-tools,
 # hardware.graphics) lives in gpu-vulkan.nix, imported below; this module adds
 # only the llama.cpp/llmtune serving on top.
-{ config, lib, pkgs, llamaVulkan, mesaUnstable, ... }:
+{ config, lib, pkgs, llamaVulkan, ... }:
 
 let
   cfg = config.bc250.llamaVulkan;
   modelsDir = "/var/lib/llmtune/models";
   modelPath = "${modelsDir}/${cfg.modelFile}";
 
-  # The mesa RADV ICD that recognises the BC-250 (unstable mesa).
-  radvIcd = "${mesaUnstable}/share/vulkan/icd.d/radeon_icd.x86_64.json";
+  # The mesa RADV ICD that recognises the BC-250.
+  radvIcd = "${pkgs.mesa}/share/vulkan/icd.d/radeon_icd.x86_64.json";
 
   # The GPU Vulkan environment proven on the board:
-  #  - VK_DRIVER_FILES -> the mesa-26 RADV ICD (24.11's mesa can't see the chip)
-  #  - LD_LIBRARY_PATH  -> llama's libs + mesa-26 libs (RADV deps)
-  #  - VK_LOADER_LAYERS_DISABLE -> drop the 24.11 device-select layer that
+  #  - VK_DRIVER_FILES -> the RADV ICD
+  #  - LD_LIBRARY_PATH  -> llama's libs + mesa libs (RADV deps)
+  #  - VK_LOADER_LAYERS_DISABLE -> drop the device-select layer that
   #    interferes with device enumeration
   gpuEnv = {
     VK_DRIVER_FILES = radvIcd;
-    LD_LIBRARY_PATH = "${llamaVulkan}/lib:${mesaUnstable}/lib";
+    LD_LIBRARY_PATH = "${llamaVulkan}/lib:${pkgs.mesa}/lib";
     VK_LOADER_LAYERS_DISABLE = "*";
   };
 
@@ -55,7 +55,7 @@ let
     id = "gemma"
     arch_match = ["gemma"]
     bin = "${llamaVulkan}/bin/llama-server"
-    ld_path = "${llamaVulkan}/lib:${mesaUnstable}/lib"
+    ld_path = "${llamaVulkan}/lib:${pkgs.mesa}/lib"
     flags = "${gemmaFlags}"
     [profile.env]
     VK_DRIVER_FILES = "${radvIcd}"
@@ -65,7 +65,7 @@ let
     id = "_default"
     arch_match = []
     bin = "${llamaVulkan}/bin/llama-server"
-    ld_path = "${llamaVulkan}/lib:${mesaUnstable}/lib"
+    ld_path = "${llamaVulkan}/lib:${pkgs.mesa}/lib"
     # --no-mmap: the model library is NFS-served, so mmap would hold the weights
     # in host page cache WHILE the GPU also copies them into GTT (~2x resident on
     # a 16 GiB UMA board -> OOM at full offload). Reading straight into GTT keeps
@@ -159,7 +159,7 @@ in
   config = {
     networking.firewall.allowedTCPPorts = [ 8080 ];
 
-    # mesaUnstable + vulkan-tools come from gpu-vulkan.nix. The NFS client
+    # mesa + vulkan-tools come from gpu-vulkan.nix. The NFS client
     # helper is only needed when the models come over NFS.
     environment.systemPackages = [ llamaVulkan swapHelper ]
       ++ lib.optional (cfg.modelsSource == "nfs") pkgs.nfs-utils;

@@ -50,5 +50,6 @@ shell hooks. Nothing else on the host is affected.
 
 ## Notes
 
-- Building the BC-250 kernel needs `--impure` (the untracked `kernel/src`
-  source tree); this works with the multi-user daemon and with nix-portable.
+- Builds are pure: the kernel source is fetched by the flake
+  (nix-cachyos-kernel input), so no `--impure` is needed. The only optional
+  `--impure` use is a gitignored `local.nix` for site config (see README).

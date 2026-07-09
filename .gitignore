@@ -1,6 +1,7 @@
 result
 result-*
-# the kernel source tree (or a symlink to it) goes here; see README
+# LEGACY (pre nix-cachyos-kernel refactor): the kernel source used to be
+# placed/symlinked here; keep ignored so old checkouts never commit an 850MB tree
 kernel/src
 kernel/cachyos-7.0.9-1*
 *.tar.zst

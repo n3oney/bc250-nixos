@@ -9,9 +9,26 @@ patched kernel, a working Vulkan GPU stack, and the
 you can turn the board into a small Linux server, an LLM box, or a desktop
 computer.
 
+The whole thing is one Nix flake, and every piece (kernel source included)
+is a flake input. That means there is nothing to download, patch, or place
+by hand, and you do not even need to clone this repo. One command builds a
+bootable image:
+
+```sh
+nix build github:cachenetics/bc250-nixos#standaloneIso
+```
+
+That gives you a ready-to-flash ISO that boots the board, sees the GPU, and
+serves LLMs from its own disk. The desktop ISO works the same way
+(`#desktopIso`). Both log in with a placeholder password, so they need no
+configuration at all. The two netboot images also build from a bare
+reference, but they are ssh-key-only, so they need one small piece of
+configuration first: your ssh public key (see [Configure your
+site](#configure-your-site)).
+
 Everything is GPL-2.0-only (matching the kernel and patches). See `LICENSE`.
 
-## Which image should I pick?
+## Which image do I want?
 
 There are four variants. All of them share the same base: the
 cachyos-bore 7.0.9 kernel with the 12 BC-250 liberation patches, the
@@ -59,80 +76,74 @@ the board's own drive.
 ## What you need
 
 - A BC-250 board (or a compatible Cyan Skillfish box).
-- A Linux machine with Nix and flakes enabled to build the images. A
-  rootless [nix-portable](https://github.com/DavHau/nix-portable) works
-  too if you cannot install Nix.
-- The kernel source tree placed at `kernel/src` (next section). Budget
-  roughly 15 GiB of disk for the source copy plus the kernel build.
+- A Linux machine with [Nix](https://nixos.org/download/) and
+  [flakes enabled](https://nixos.wiki/wiki/Flakes) to build the images.
+  You do not need to run NixOS, and you do not need to know Nix: every
+  command in this README is copy-paste. A rootless
+  [nix-portable](https://github.com/DavHau/nix-portable) works too if you
+  cannot install Nix. Budget roughly 15 GiB of disk for the kernel build.
 - For the netboot variants: a machine on the same network to act as the
   boot server (llmtune's `netboot` commands can set one up for you), and
   for the LLM image an NFS export with your `.gguf` model files.
 - For the desktop and standalone variants: a USB stick to flash the ISO
   onto, and a drive in the board to install to.
 
-## Step 1: get the kernel source (`kernel/src`)
+There is nothing to download or place by hand: the kernel source is a
+flake input, fetched and patched automatically at build time.
 
-This flake pins the kernel to `linux-cachyos-bore 7.0.9`. That exact
-version is validated on the board; kernels 7.0.11 and later regress the
-BC-250's SDMA path, so the flake never tracks a stock or latest kernel.
+## Step 1: build an image
 
-The prepared source tree is about 850 MB and is not shipped in this repo.
-Put it at `kernel/src` (a symlink is fine; the path is gitignored):
+Straight from the flake reference, no clone needed:
 
 ```sh
-# Obtain the linux-cachyos-bore 7.0.9 source, e.g. via the AUR package:
-git clone https://aur.archlinux.org/linux-cachyos-bore.git
-cd linux-cachyos-bore
-# check out the 7.0.9-1 revision of the PKGBUILD, then let makepkg
-# prepare the tree (download + patch, no build):
-makepkg --nobuild
-# point kernel/src at the prepared tree:
-ln -sfn /path/to/linux-cachyos-bore/src/linux-7.0.9 /path/to/bc250-nixos/kernel/src
+# standalone single-box inference ISO (headless, models on local disk)
+nix build github:cachenetics/bc250-nixos#standaloneIso
+
+# KDE desktop live/install ISO
+nix build github:cachenetics/bc250-nixos#desktopIso
 ```
 
-If you already have a prepared 7.0.9 tree, just symlink it. The 12
-BC-250 liberation patches in `kernel/patches/` are applied on top
-automatically (sorted 01..12), and `kernel/bc250-running.config` is the
-exact validated kernel config, so the build reproduces the reference
-board's kernel.
-
-## Step 2: build an image
-
-Run these from the repo root:
+Or from a checkout of this repo, run these from the repo root (no
+`--impure` needed; see [Configure your site](#configure-your-site) for the
+one optional exception):
 
 ```sh
 # base netboot image (the default, no LLM stack)
-nix build .#netbootKernel .#netbootRamdisk .#netbootIpxe --impure
+nix build .#netbootKernel .#netbootRamdisk .#netbootIpxe
 
 # netboot inference appliance
-nix build .#netbootKernelLlmtune .#netbootRamdiskLlmtune .#netbootIpxeLlmtune --impure
+nix build .#netbootKernelLlmtune .#netbootRamdiskLlmtune .#netbootIpxeLlmtune
 
-# standalone single-box inference ISO (headless, models on local disk)
-nix build .#standaloneIso --impure
+# standalone single-box inference ISO
+nix build .#standaloneIso
 
 # KDE desktop live/install ISO
-nix build .#desktopIso --impure
+nix build .#desktopIso
 ```
 
-`--impure` is required because the untracked `kernel/src` tree is resolved
-from the invocation directory and copied into the store (set
-`BC250_KERNEL_SRC=/path/to/tree` to point somewhere else).
+The netboot triples also build from a bare `github:` reference, but with
+no ssh key baked in the resulting image has no remote login; to set your
+key and network options without cloning, point a small consumer flake at
+this one (see [Configure your site](#configure-your-site), Option A).
+
+What you get:
+
+- Netboot variants: three `result*` symlinks: the kernel, the ramdisk, and
+  an iPXE script.
+- Desktop and standalone ISOs: a `result` symlink holding the bootable
+  `.iso`.
 
 Building the kernel compiles a lot of modules and needs plenty of scratch
 space. If the build fails with "No space left on device", your `/tmp` is
 probably a small tmpfs; point the build at a disk-backed directory with
 room to spare, for example `TMPDIR=/var/tmp nix build ...`.
 
-For the netboot variants you get three `result*` symlinks: the kernel, the
-ramdisk, and an iPXE script. For the desktop and standalone ISOs, the
-`result` symlink holds the bootable `.iso`.
-
 There are also `netbootKernelMin`/`netbootRamdiskMin`/`netbootIpxeMin`
 outputs (kernel only, no Rust packages) for a first QEMU smoke test, plus
 a `qemu/` harness that validates the whole iPXE, HTTP, and boot chain in
 software before you touch hardware. See `qemu/README.md`.
 
-## Step 3a: netboot variants: serve and boot
+## Step 2a: netboot variants: serve and boot
 
 The three build artifacts are what a netboot server hands to a PXE-booting
 BC-250, served as `/vmlinuz`, `/initramfs`, and `/boot.ipxe`. Any
@@ -146,13 +157,14 @@ Two things to know:
   warm reboot. The board's network card does not reliably PXE boot after a
   warm reboot.
 - The board is headless. To see what it is doing during boot, set the
-  netconsole option (below) and it will ship kernel and journal logs to
-  your machine over UDP.
+  netconsole option (next section) and it will ship kernel and journal
+  logs to your machine over UDP.
 
-Once booted, the board names itself `bc250-<mac>` and you log in as root
-over ssh with the key you configured (next section).
+Once booted, the board names itself `bc250-<mac>` (the last six hex digits
+of its MAC) and you log in as root over ssh with the key you configured
+(next section).
 
-## Step 3b: installable variants: flash and install
+## Step 2b: installable variants: flash and install
 
 Write the ISO to a USB stick (with `dd`, GNOME Disks, balenaEtcher, or
 similar) and boot the board from it. The desktop image runs the Calamares
@@ -165,12 +177,12 @@ On the standalone image, once installed, put your `.gguf` model files in
 `/var/lib/llmtune/models` and the server picks them up: it serves on port
 8080, and `bc250-swap <name>` switches the served model.
 
-## Site configuration (`local.nix`)
+## Configure your site
 
-The netboot images need to know a few things about your network. Put them
-in a file called `local.nix` next to `flake.nix`. It is gitignored, so
-your keys and addresses never end up in the repo. Example (replace
-`10.0.0.10` with your server's address):
+The netboot images need to know a few things about your network: your ssh
+public key (REQUIRED: the image is key-only, no password login), and for
+the LLM image the NFS model export. None of that belongs in tracked files.
+There are two ways to provide it; the option set is the same for both:
 
 ```nix
 {
@@ -185,24 +197,134 @@ your keys and addresses never end up in the repo. Example (replace
 
   # Where to ship boot logs (UDP port 6666). Optional but very handy,
   # because the board is headless with no serial console.
+  # Capture on that machine with: socat -u udp-recvfrom:6666,fork -
   bc250.netconsole.targetIp = "10.0.0.10";
 }
 ```
 
+Also available: `bc250.llamaVulkan.modelOverrides` (per-model llama.cpp
+flag overrides, model filename to flag string) and
+`bc250.netconsole.port`/`bc250.netconsole.targetMac` if the defaults do
+not suit your network.
+
 Every variant accepts the full option set and ignores what does not apply
-to it, so one `local.nix` serves all the images. The standalone image
-needs no `local.nix` at all: it has no boot server, NFS, or netconsole to
+to it, so one site config serves all the images. The standalone image
+needs no site config at all: it has no boot server, NFS, or netconsole to
 point at.
 
-## Repo layout
+### Option A (recommended): your own consumer flake, fully pure
+
+Keep your keys and addresses in a separate (private) flake that extends
+the systems this repo exports. `extendModules` inherits all of the kernel
+and GPU wiring, so your flake is just the site options:
+
+```nix
+{
+  inputs.bc250-nixos.url = "github:cachenetics/bc250-nixos";
+
+  outputs = { self, bc250-nixos, ... }: {
+    nixosConfigurations.my-node =
+      bc250-nixos.nixosConfigurations.bc250-nixos-llmtune.extendModules {
+        modules = [
+          {
+            bc250.sshAuthorizedKeys = [ "ssh-ed25519 AAAA... you@your-machine" ];
+            bc250.llamaVulkan.modelsNfs = "10.0.0.10:/srv/nfs/models";
+            bc250.llamaVulkan.modelFile = "your-model.gguf";
+            bc250.netconsole.targetIp = "10.0.0.10";
+          }
+        ];
+      };
+
+    packages.x86_64-linux = {
+      netbootKernel = self.nixosConfigurations.my-node.config.system.build.kernel;
+      netbootRamdisk = self.nixosConfigurations.my-node.config.system.build.netbootRamdisk;
+      netbootIpxe = self.nixosConfigurations.my-node.config.system.build.netbootIpxeScript;
+    };
+  };
+}
+```
+
+Then `nix build .#netbootKernel .#netbootRamdisk .#netbootIpxe` in YOUR
+flake, no `--impure` anywhere. The individual modules are also exported as
+`nixosModules.*` if you want to assemble a system from parts instead; if you
+go that route, set `nixpkgs.config.allowUnfree = true` yourself (the
+hardware module pulls in linux-firmware, which is unfree). Extending one of
+the `nixosConfigurations` above already sets that for you.
+
+### Option B (quick local build): a gitignored `local.nix`
+
+For iterating in a checkout of THIS repo: put the options in a file called
+`local.nix` next to `flake.nix`. It is gitignored, so your keys and
+addresses never end up in the repo, and because a git flake's store copy
+excludes ignored files it is picked up from the invocation directory only
+when you build with `--impure` from the repo root:
+
+```sh
+nix build .#netbootKernel .#netbootRamdisk .#netbootIpxe --impure
+```
+
+Without `--impure` (or without a `local.nix`) the tracked placeholder
+defaults apply, which for the netboot images means no ssh login.
+
+## Keeping it working: updates and reproducibility
+
+This repo builds on a rolling `nixos-unstable` base, but the committed
+`flake.lock` pins every input to an exact revision, so a plain `nix build`
+is reproducible: you get the same nixpkgs, mesa, and kernel every time. The
+kernel is additionally hard-pinned to 7.0.9 (the flake refuses to evaluate
+against any other version), because 7.0.11+ regresses the board's SDMA
+path.
+
+The rest of the stack is not version-gated, and mesa and glibc are exactly
+the parts this board is fussy about (mesa older than 26 cannot even see the
+GPU). So treat `nix flake update` as a hardware event, not routine
+maintenance:
+
+- The `flake.lock` in this repo IS the validated pin. A fresh clone builds
+  a known-good image without touching it.
+- If you run `nix flake update` (or bump `nixpkgs`), you may pull a newer
+  mesa/glibc/systemd that has never been tried on gfx1013. Re-run the board
+  validation in `docs/BUILD_AND_VALIDATE.md` (section 4) before trusting the
+  result, and be ready to roll the lock back if the GPU or SDMA regresses.
+- To hold a single input still while updating others, use
+  `nix flake lock --update-input <name>` rather than a blanket update.
+
+## Under the hood
+
+### The kernel
+
+The kernel is `linux-cachyos-bore 7.0.9`, built by overriding
+[xddxdd/nix-cachyos-kernel](https://github.com/xddxdd/nix-cachyos-kernel)
+(pinned in `flake.nix` to a rev that provides exactly 7.0.9). That exact
+version is validated on the board; kernels 7.0.11 and later regress the
+BC-250's SDMA path, so the flake never tracks a stock or latest kernel,
+and `kernel/bc250-kernel.nix` hard-asserts the version so a careless
+input bump fails at evaluation time instead of producing a bad kernel.
+
+On top of the stock cachyos-bore tree the flake layers the two BC-250
+things: the 12 liberation patches in `kernel/patches/` (applied in 01..12
+order) and the exact validated board config
+(`kernel/bc250-running.config`). `scripts/verify-kernel-config.sh` proves
+the resolved build config still matches the validated one; see
+`docs/BUILD_AND_VALIDATE.md` for the full build-and-validate runbook.
+
+### Validation
+
+The pinned build has been validated end to end on real hardware, including
+a real PXE boot: the 40-CU unlock takes effect, the GPU enumerates as
+GFX1013 under mesa-26 RADV, and full-offload llama.cpp Vulkan inference
+runs at production throughput with no SDMA errors. The runbook for
+repeating that validation (after any input bump) is
+`docs/BUILD_AND_VALIDATE.md`.
+
+### Repo layout
 
 ```
-flake.nix                     inputs + the four systems + image outputs
+flake.nix                     inputs + the four systems + image/module outputs
 kernel/
-  bc250-kernel.nix            pinned 7.0.9 source + config + the 12 patches
+  bc250-kernel.nix            the 7.0.9 cachy kernel override: config + 12 patches
   bc250-running.config        the validated kernel config
   patches/01..12-*.patch      the BC-250 liberation series (from project-ariel)
-  src/                        NOT tracked: place the kernel source tree here
 modules/
   bc250-hardware.nix          the pinned kernel + kernel parameters
   netboot-node.nix            key-only root ssh + hostname-from-MAC
@@ -218,6 +340,10 @@ hosts/
   bc250-netboot-min.nix       kernel-only variant (QEMU smoke test)
 pkgs/
   llmtune.nix  arieltune.nix  the two Rust tools, built from source
+scripts/
+  verify-kernel-config.sh     resolved-config vs validated-config gate
+docs/
+  BUILD_AND_VALIDATE.md       operator build + board-validation runbook
 qemu/                         software-only boot-chain test harness
 ```
 
@@ -233,6 +359,18 @@ qemu/                         software-only boot-chain test harness
   images apply an arieltune profile on every boot.
 
 Both are pinned as flake inputs and built from source into the images.
+
+## Acknowledgments
+
+- **[neoney](https://github.com/n3oney)** (Michal Minarowski) reworked the
+  flake to build the kernel entirely from inputs:
+  overriding [xddxdd/nix-cachyos-kernel](https://github.com/xddxdd/nix-cachyos-kernel)
+  instead of a hand-supplied source tree, moving the base to a rolling
+  nixpkgs, and pinning llama.cpp as a flake input. That is what lets you
+  build straight from the flake reference with no `--impure` and nothing to
+  place by hand.
+- [xddxdd](https://github.com/xddxdd) for `nix-cachyos-kernel`, the CachyOS
+  kernel packaging this repo builds on.
 
 ## License
 
