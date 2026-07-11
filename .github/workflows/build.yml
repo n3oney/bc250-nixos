@@ -20,6 +20,7 @@ jobs:
         target:
           - kernel
           - llamaVulkan
+          - rocmPython
     steps:
       - uses: justinthelaw/maximize-github-runner-space@v0.10.0
         with:
