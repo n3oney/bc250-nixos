@@ -2,6 +2,13 @@
 {
   description = "BC-250 NixOS images on the validated cachyos-bore 7.0.9 liberation kernel: base netboot, llmtune inference appliance, KDE Plasma desktop ISO, standalone local inference ISO";
 
+  nixConfig = {
+    extra-substituters = ["https://neoney.cachix.org"];
+    extra-trusted-public-keys = [
+      "neoney.cachix.org-1:bsFaTdG04tfzci0osGfosbRX8KX94Ih/2hU0HpJ+qRM="
+    ];
+  };
+
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
@@ -66,6 +73,27 @@
 
     overlay = _final: _prev: {inherit llmtune arieltune;};
 
+    rocmOverlay = import ./pkgs/rocm-overlay.nix;
+
+    rocmPkgs = import nixpkgs {
+      inherit system;
+      config = {
+        allowUnfree = true;
+        rocmSupport = true;
+        problems.handlers.composable_kernel.broken = "warn";
+      };
+      overlays = [rocmOverlay];
+    };
+
+    # vllm omitted for now: it's flagged insecure, so it needs a
+    # permittedInsecurePackages allow to build.
+    rocmPython = rocmPkgs.python3.withPackages (ps: [
+      ps.torch
+      ps.transformers
+      ps.accelerate
+      ps.diffusers
+    ]);
+
     llamaVulkan = inputs.llama-cpp.packages.${system}.vulkan;
 
     # OPTIONAL site-local config: a gitignored local.nix beside this flake sets
@@ -93,14 +121,15 @@
     bc250-nixos = nixpkgs.lib.nixosSystem {
       inherit system;
       specialArgs = {inherit bc250Kernel;};
-      modules = [
-        {
-          nixpkgs.overlays = [overlay];
-          nixpkgs.config.allowUnfree = true;
-        }
-        ./hosts/bc250-nixos.nix
-      ]
-      ++ localModules;
+      modules =
+        [
+          {
+            nixpkgs.overlays = [overlay];
+            nixpkgs.config.allowUnfree = true;
+          }
+          ./hosts/bc250-nixos.nix
+        ]
+        ++ localModules;
     };
 
     # The netboot inference appliance: arieltune-tuned on boot, Vulkan
@@ -108,14 +137,15 @@
     bc250-nixos-llmtune = nixpkgs.lib.nixosSystem {
       inherit system;
       specialArgs = {inherit bc250Kernel llamaVulkan;};
-      modules = [
-        {
-          nixpkgs.overlays = [overlay];
-          nixpkgs.config.allowUnfree = true;
-        }
-        ./hosts/bc250-nixos-llmtune.nix
-      ]
-      ++ localModules;
+      modules =
+        [
+          {
+            nixpkgs.overlays = [overlay];
+            nixpkgs.config.allowUnfree = true;
+          }
+          ./hosts/bc250-nixos-llmtune.nix
+        ]
+        ++ localModules;
     };
 
     # The local KDE Plasma desktop, as a live + Calamares install ISO, with
@@ -123,14 +153,15 @@
     bc250-nixos-desktop = nixpkgs.lib.nixosSystem {
       inherit system;
       specialArgs = {inherit bc250Kernel;};
-      modules = [
-        {
-          nixpkgs.overlays = [overlay];
-          nixpkgs.config.allowUnfree = true;
-        }
-        ./hosts/bc250-nixos-desktop.nix
-      ]
-      ++ localModules;
+      modules =
+        [
+          {
+            nixpkgs.overlays = [overlay];
+            nixpkgs.config.allowUnfree = true;
+          }
+          ./hosts/bc250-nixos-desktop.nix
+        ]
+        ++ localModules;
     };
 
     # The standalone single-box inference appliance: a headless live/install
@@ -140,14 +171,15 @@
     bc250-nixos-standalone = nixpkgs.lib.nixosSystem {
       inherit system;
       specialArgs = {inherit bc250Kernel llamaVulkan;};
-      modules = [
-        {
-          nixpkgs.overlays = [overlay];
-          nixpkgs.config.allowUnfree = true;
-        }
-        ./hosts/bc250-nixos-standalone.nix
-      ]
-      ++ localModules;
+      modules =
+        [
+          {
+            nixpkgs.overlays = [overlay];
+            nixpkgs.config.allowUnfree = true;
+          }
+          ./hosts/bc250-nixos-standalone.nix
+        ]
+        ++ localModules;
     };
 
     # Our kernel + netboot, NO llmtune/arieltune: boots our 7.0.9 in QEMU
@@ -185,10 +217,17 @@
       gpu-vulkan = ./modules/gpu-vulkan.nix;
       llama-vulkan = ./modules/llama-vulkan.nix;
       netconsole-debug = ./modules/netconsole-debug.nix;
+      rocm = ./modules/rocm.nix;
     };
+
+    overlays.rocm = rocmOverlay;
 
     packages.${system} = {
       inherit bc250Kernel llmtune arieltune llamaVulkan;
+
+      # gfx1010 PyTorch ML env. Build with:
+      #   nix build .#rocmPython
+      inherit rocmPython;
 
       # The DEFAULT netboot triple (base image, no LLM stack). Build with:
       #   nix build .#netbootKernel .#netbootRamdisk .#netbootIpxe

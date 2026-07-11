@@ -91,6 +91,37 @@ the board's own drive.
 There is nothing to download or place by hand: the kernel source is a
 flake input, fetched and patched automatically at build time.
 
+## Binary cache (skip the kernel build)
+
+The custom kernel and the Vulkan llama.cpp build are not on
+`cache.nixos.org`, so by default you compile them yourself (~15 GiB of
+disk, and slow on the board itself). CI builds them on every push and
+pushes them to a [Cachix](https://www.cachix.org/) cache, so you can pull
+the binaries instead:
+
+    https://neoney.cachix.org
+    public key: neoney.cachix.org-1:bsFaTdG04tfzci0osGfosbRX8KX94Ih/2hU0HpJ+qRM=
+
+If you build with `nix build github:n3oney/bc250-nixos#...`, the flake
+advertises this cache automatically (via its `nixConfig`) and Nix prompts
+you once to trust it — say yes and the kernel is fetched, not built. The
+images themselves ship this cache in their `/etc/nix/nix.conf`, so a
+board doing its own later rebuilds substitutes from it too.
+
+To enable it globally on your build machine instead:
+
+```sh
+# one-off, if you have the cachix CLI
+cachix use neoney
+
+# or add to /etc/nix/nix.conf (or ~/.config/nix/nix.conf) by hand
+extra-substituters = https://neoney.cachix.org
+extra-trusted-public-keys = neoney.cachix.org-1:bsFaTdG04tfzci0osGfosbRX8KX94Ih/2hU0HpJ+qRM=
+```
+
+The cache is a convenience, not a requirement: everything still builds
+from source without it.
+
 ## Step 1: build an image
 
 Straight from the flake reference, no clone needed:
@@ -332,6 +363,7 @@ modules/
   gpu-vulkan.nix              GPU userspace: mesa-26 RADV + vulkan-tools
   llama-vulkan.nix            GPU inference: Vulkan llama.cpp, NFS or local models
   netconsole-debug.nix        ship boot logs to a collector over UDP
+  rocm.nix                    opt-in gfx1010 ROCm/torch/vllm (nixosModules.rocm)
 hosts/
   bc250-nixos.nix             the default headless image
   bc250-nixos-llmtune.nix     the netboot inference appliance

@@ -3,10 +3,19 @@
 # BC-250 (Cyan Skillfish / gfx1013) hardware: the pinned kernel + the boot-time
 # knobs that make it stable and fast headless. `bc250Kernel` comes from the
 # flake's specialArgs (built by kernel/bc250-kernel.nix).
-{ config, lib, pkgs, bc250Kernel, ... }:
-
 {
+  pkgs,
+  bc250Kernel,
+  ...
+}: {
   boot.kernelPackages = pkgs.linuxPackagesFor bc250Kernel;
+
+  nix.settings = {
+    extra-substituters = ["https://neoney.cachix.org"];
+    extra-trusted-public-keys = [
+      "neoney.cachix.org-1:bsFaTdG04tfzci0osGfosbRX8KX94Ih/2hU0HpJ+qRM="
+    ];
+  };
 
   # amdgpu loads in stage-2 from the store (no need in the initrd for a headless
   # serial node - keeps the initrd lean and avoids bundling GPU firmware there).
@@ -47,7 +56,7 @@
     "console=ttyS0"
   ];
 
-  hardware.firmware = [ pkgs.linux-firmware ];
+  hardware.firmware = [pkgs.linux-firmware];
   hardware.graphics.enable = true;
 
   # Our inference path is llama.cpp over Vulkan/rusticl (NOT ROCm), so we do not
