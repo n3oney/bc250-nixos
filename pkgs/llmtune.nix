@@ -5,8 +5,13 @@
 #
 # `src` is the pinned flake input (github:cachenetics/llmtune), passed in from
 # flake.nix; the Cargo.lock ships in the source tree.
-{ lib, rustPlatform, pkg-config, src, ... }:
-
+{
+  lib,
+  rustPlatform,
+  pkg-config,
+  src,
+  ...
+}:
 rustPlatform.buildRustPackage {
   pname = "llmtune";
   version = "0.1.0";
@@ -15,7 +20,7 @@ rustPlatform.buildRustPackage {
 
   cargoLock.lockFile = src + "/Cargo.lock";
 
-  nativeBuildInputs = [ pkg-config ];
+  nativeBuildInputs = [pkg-config];
 
   # llmtune is CLI/TUI + a small tiny_http server; no unusual native deps.
   doCheck = false; # the suite spawns ssh/systemctl; run tests in CI, not the sandbox

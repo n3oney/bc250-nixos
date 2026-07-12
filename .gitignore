@@ -25,6 +25,3 @@ bootsrv/http-access.log
 
 # boot-server scratch (lab-local; regenerated) - never publish
 bootsrv/
-
-# site-local config (host IPs, keys, model overrides) - never commit
-local.nix

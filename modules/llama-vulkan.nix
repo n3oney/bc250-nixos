@@ -24,11 +24,14 @@
 # The GPU-userspace enablement itself (mesa-26 RADV for gfx1013, vulkan-tools,
 # hardware.graphics) lives in gpu-vulkan.nix, imported below; this module adds
 # only the llama.cpp/llmtune serving on top.
-{ config, lib, pkgs, llamaVulkan, ... }:
-
-let
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
   cfg = config.bc250.llamaVulkan;
-  modelsDir = "/var/lib/llmtune/models";
+  modelsDir = cfg.modelsDirectory;
   modelPath = "${modelsDir}/${cfg.modelFile}";
 
   # The mesa RADV ICD that recognises the BC-250.
@@ -41,12 +44,12 @@ let
   #    interferes with device enumeration
   gpuEnv = {
     VK_DRIVER_FILES = radvIcd;
-    LD_LIBRARY_PATH = "${llamaVulkan}/lib:${pkgs.mesa}/lib";
+    LD_LIBRARY_PATH = "${cfg.package}/lib:${pkgs.mesa}/lib";
     VK_LOADER_LAYERS_DISABLE = "*";
   };
 
   # BC-250-tuned gemma flags (llmtune's seed) + full GPU offload.
-  gemmaFlags = "-c 32768 --parallel 1 --cache-ram 1024 --cache-reuse 256 --flash-attn on --no-mmap --jinja -ngl 99 -t 4 -ctk q4_0 -ctv q4_0 --temp 1.0 --top-p 0.95 --top-k 64";
+  gemmaFlags = cfg.gemmaFlags;
 
   # llmtune profiles.toml: point the `gemma` profile at the baked binary + the
   # GPU env, so `llmtune bench`/node ops resolve the GPU llama (no on-node build).
@@ -54,8 +57,8 @@ let
     [[profile]]
     id = "gemma"
     arch_match = ["gemma"]
-    bin = "${llamaVulkan}/bin/llama-server"
-    ld_path = "${llamaVulkan}/lib:${pkgs.mesa}/lib"
+    bin = "${cfg.package}/bin/llama-server"
+    ld_path = "${cfg.package}/lib:${pkgs.mesa}/lib"
     flags = "${gemmaFlags}"
     [profile.env]
     VK_DRIVER_FILES = "${radvIcd}"
@@ -64,13 +67,13 @@ let
     [[profile]]
     id = "_default"
     arch_match = []
-    bin = "${llamaVulkan}/bin/llama-server"
-    ld_path = "${llamaVulkan}/lib:${pkgs.mesa}/lib"
+    bin = "${cfg.package}/bin/llama-server"
+    ld_path = "${cfg.package}/lib:${pkgs.mesa}/lib"
     # --no-mmap: the model library is NFS-served, so mmap would hold the weights
     # in host page cache WHILE the GPU also copies them into GTT (~2x resident on
     # a 16 GiB UMA board -> OOM at full offload). Reading straight into GTT keeps
     # one copy and lets -ngl 99 fit.
-    flags = "-c 8192 --parallel 1 --flash-attn on --jinja -ngl 99 -t 4 --no-mmap"
+    flags = "${cfg.defaultFlags}"
     [profile.env]
     VK_DRIVER_FILES = "${radvIcd}"
     VK_LOADER_LAYERS_DISABLE = "*"
@@ -80,9 +83,7 @@ let
   # set-model` edits). Baked as the seed so full-GPU tunings survive the diskless
   # reboot (/ is tmpfs). Runtime edits win until the next boot re-seeds this.
   # Seeded from the bc250.llamaVulkan.modelOverrides option (empty by default).
-  overrideLines = lib.mapAttrsToList
-    (model: flags: ''"${model}" = "${flags}"'')
-    cfg.modelOverrides;
+  overrideLines = lib.mapAttrsToList (model: flags: ''"${model}" = "${flags}"'') cfg.modelOverrides;
   overridesToml = pkgs.writeText "llmtune-overrides.toml" ''
     # llmtune per-model llama.cpp flag overrides (managed by the TUI editor).
     # Example: a ~10 GiB Q8_0 model fits full-offload on the 16 GiB UMA only
@@ -109,24 +110,44 @@ let
     if [ -z "$f" ]; then echo "no model matching '$q' in ${modelsDir}"; exit 1; fi
     case "$(basename "$f" | tr 'A-Z' 'a-z')" in
       *gemma*) flags="${gemmaFlags}";;
-      *) flags="-c 8192 --parallel 1 --flash-attn on --jinja -ngl 99 -t 4 --no-mmap";;
+      *) flags=${lib.escapeShellArg cfg.defaultFlags};;
     esac
     echo "swapping -> $(basename "$f")"
     mkdir -p /run/systemd/system/llama-server.service.d
     { echo "[Service]"; echo "ExecStart="; \
-      echo "ExecStart=${llamaVulkan}/bin/llama-server -m $f --host 0.0.0.0 --port 8080 $flags"; \
+      echo "ExecStart=${cfg.package}/bin/llama-server -m $f --host ${cfg.listenAddress} --port ${toString cfg.port} $flags"; \
     } > /run/systemd/system/llama-server.service.d/override.conf
     systemctl daemon-reload
     systemctl restart llama-server
     echo "restarted on $(basename "$f"); previous model's GPU+RAM freed."
   '';
-in
-{
-  imports = [ ./gpu-vulkan.nix ];
+in {
+  imports = [./gpu-vulkan.nix];
 
   options.bc250.llamaVulkan = {
+    enable = lib.mkEnableOption "Vulkan-accelerated llama.cpp serving on the BC-250";
+
+    package = lib.mkOption {
+      type = lib.types.package;
+      description = "Vulkan-enabled llama.cpp package used by llama-server.";
+    };
+
+    llmtunePackage = lib.mkOption {
+      type = lib.types.package;
+      description = "llmtune package installed alongside the server.";
+    };
+
+    modelsDirectory = lib.mkOption {
+      type = lib.types.str;
+      default = "/var/lib/llmtune/models";
+      description = "Directory containing GGUF model files.";
+    };
+
     modelsSource = lib.mkOption {
-      type = lib.types.enum [ "nfs" "local" ];
+      type = lib.types.enum [
+        "nfs"
+        "local"
+      ];
       default = "nfs";
       description = ''
         Where the GGUF models come from. "nfs" (the netboot appliance):
@@ -136,8 +157,8 @@ in
       '';
     };
     modelsNfs = lib.mkOption {
-      type = lib.types.str;
-      default = "10.0.0.10:/srv/nfs/models"; # set to your NFS/boot-server export
+      type = lib.types.nullOr lib.types.str;
+      default = null;
       example = "10.0.0.10:/srv/nfs/models";
       description = "server:/export of the read-only GGUF model library the node mounts at boot (only used when modelsSource is \"nfs\").";
     };
@@ -148,30 +169,71 @@ in
     };
     modelOverrides = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
-      default = { };
+      default = {};
       example = {
         "some-model-Q8_0.gguf" = "-c 8192 --parallel 1 --flash-attn on --jinja -ngl 99 -t 4 -ctk q8_0 -ctv q8_0 --no-mmap";
       };
       description = "Per-model llama.cpp flag overrides seeded into llmtune's overrides.toml: model filename -> flag string.";
     };
+
+    listenAddress = lib.mkOption {
+      type = lib.types.str;
+      default = "0.0.0.0";
+      description = "Address on which llama-server listens.";
+    };
+
+    port = lib.mkOption {
+      type = lib.types.port;
+      default = 8080;
+      description = "TCP port on which llama-server listens.";
+    };
+
+    openFirewall = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Open the configured llama-server TCP port in the NixOS firewall.";
+    };
+
+    gemmaFlags = lib.mkOption {
+      type = lib.types.str;
+      default = "-c 32768 --parallel 1 --cache-ram 1024 --cache-reuse 256 --flash-attn on --no-mmap --jinja -ngl 99 -t 4 -ctk q4_0 -ctv q4_0 --temp 1.0 --top-p 0.95 --top-k 64";
+      description = "llama-server flags used for Gemma models.";
+    };
+
+    defaultFlags = lib.mkOption {
+      type = lib.types.str;
+      default = "-c 8192 --parallel 1 --flash-attn on --jinja -ngl 99 -t 4 --no-mmap";
+      description = "llama-server flags used for models without a specialized profile.";
+    };
   };
 
-  config = {
-    networking.firewall.allowedTCPPorts = [ 8080 ];
+  config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = cfg.modelsSource != "nfs" || cfg.modelsNfs != null;
+        message = "bc250.llamaVulkan.modelsNfs must be set when modelsSource is nfs";
+      }
+    ];
+
+    hardware.bc250.vulkan.enable = lib.mkDefault true;
+
+    networking.firewall.allowedTCPPorts = lib.optional cfg.openFirewall cfg.port;
 
     # mesa + vulkan-tools come from gpu-vulkan.nix. The NFS client
     # helper is only needed when the models come over NFS.
-    environment.systemPackages = [ llamaVulkan swapHelper ]
+    environment.systemPackages =
+      [
+        cfg.package
+        cfg.llmtunePackage
+        swapHelper
+      ]
       ++ lib.optional (cfg.modelsSource == "nfs") pkgs.nfs-utils;
-
-    # llmtune's own NFS serve is superseded; turn it off.
-    services.llmtune-serve.enable = lib.mkForce false;
 
     # NFS client support, STAGE-2 ONLY. Do NOT use boot.supportedFilesystems here:
     # it pulls NFS toward the initrd, which this netboot pins to a minimal module
     # set (squashfs/overlay/loop) and the mismatch hangs stage-1. Load nfs at
     # runtime + ship the mount.nfs helper (added to systemPackages above) instead.
-    boot.kernelModules = lib.optionals (cfg.modelsSource == "nfs") [ "nfs" ];
+    boot.kernelModules = lib.optionals (cfg.modelsSource == "nfs") ["nfs"];
 
     # Mount the whole model library from the NFS export (read-only). Automount
     # so a slow/absent server never blocks boot; llama-server RequiresMountsFor
@@ -205,7 +267,7 @@ in
     # GPU binary). /root/.config isn't declarative, so a tiny oneshot writes it.
     systemd.services.bc250-llmtune-profiles = {
       description = "Install llmtune GPU profiles.toml + per-model overrides";
-      wantedBy = [ "multi-user.target" ];
+      wantedBy = ["multi-user.target"];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -220,13 +282,16 @@ in
     # NFS model mount. `bc250-swap <name>` overrides ExecStart via a /run drop-in.
     systemd.services.llama-server = {
       description = "llama.cpp Vulkan inference server (BC-250 GPU)";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "arieltune-tune.service" "network-online.target" ];
-      wants = [ "network-online.target" ];
+      wantedBy = ["multi-user.target"];
+      after = [
+        "arieltune-tune.service"
+        "network-online.target"
+      ];
+      wants = ["network-online.target"];
       unitConfig.RequiresMountsFor = modelsDir;
       environment = gpuEnv;
       serviceConfig = {
-        ExecStart = "${llamaVulkan}/bin/llama-server -m ${modelPath} --host 0.0.0.0 --port 8080 ${gemmaFlags}";
+        ExecStart = "${cfg.package}/bin/llama-server -m ${modelPath} --host ${cfg.listenAddress} --port ${toString cfg.port} ${gemmaFlags}";
         Restart = "on-failure";
         RestartSec = 5;
       };

@@ -12,45 +12,28 @@
 # services.desktopManager.plasma6, SDDM with autologin, services.xserver,
 # NetworkManager, and the `nixos` live user with passwordless sudo) with our
 # hardware and GPU modules. Build the ISO with:
-#   nix build .#desktopIso --impure
-{ config, lib, pkgs, modulesPath, ... }:
-
+#   nix build .#desktopIso
 {
+  config,
+  lib,
+  modulesPath,
+  ...
+}: {
   imports = [
     # Live + Calamares install ISO; provides config.system.build.isoImage.
     "${modulesPath}/installer/cd-dvd/installation-cd-graphical-calamares-plasma6.nix"
-
-    ../modules/bc250-hardware.nix
-    ../modules/gpu-vulkan.nix
   ];
 
-  # One local.nix serves every variant: accept (and ignore) the netboot-image
-  # site options here, so a local.nix written for the netboot nodes also
-  # evaluates against this host. Only bc250-hardware/gpu-vulkan options apply.
-  options.bc250.llamaVulkan = lib.mkOption {
-    type = lib.types.attrs;
-    default = { };
-    description = "Ignored on the desktop image; consumed by modules/llama-vulkan.nix on the inference node.";
-  };
-  options.bc250.netconsole = lib.mkOption {
-    type = lib.types.attrs;
-    default = { };
-    description = "Ignored on the desktop image; consumed by modules/netconsole-debug.nix on the netboot nodes.";
-  };
-  options.bc250.sshAuthorizedKeys = lib.mkOption {
-    type = lib.types.listOf lib.types.str;
-    default = [ ];
-    description = "Ignored on the desktop image; consumed by modules/netboot-node.nix on the netboot nodes.";
-  };
-  options.services.llmtune-serve = lib.mkOption {
-    type = lib.types.attrs;
-    default = { };
-    description = "Ignored on the desktop image; consumed by modules/llmtune-serve.nix on the inference node.";
-  };
-
   config = {
+    hardware.bc250 = {
+      enable = true;
+      disableMitigations = true;
+      binaryCache.enable = true;
+      vulkan.enable = true;
+    };
+
     # The point of this image: tune the board from the desktop.
-    environment.systemPackages = [ pkgs.arieltune ];
+    environment.systemPackages = [config.services.arieltune-tune.package];
 
     # Sound via pipewire (the desktop counterpart of the headless images).
     security.rtkit.enable = true;
@@ -94,6 +77,6 @@
       "nvme"
     ];
 
-    system.stateVersion = "24.11";
+    system.stateVersion = lib.mkOverride 900 "24.11";
   };
 }

@@ -1,56 +1,77 @@
 # SPDX-License-Identifier: GPL-2.0-only
-#
-# The diskless node's identity + control surface: key-only root ssh (so llmtune
-# drives it the moment it boots) and a hostname-from-MAC first-boot so every
-# identical netboot image gets a stable, discoverable name (llmtune registers
-# ssh fleet nodes by it).
-{ config, lib, pkgs, ... }:
-
 {
-  options.bc250.sshAuthorizedKeys = lib.mkOption {
-    type = lib.types.listOf lib.types.str;
-    default = [ ];
-    example = [ "ssh-ed25519 AAAA... boot-server" ];
-    description = ''
-      SSH public keys granted root on every booted node. Set this to your boot
-      server's control key; with the default (empty) the node has NO remote
-      login (password auth is disabled below).
-    '';
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
+  cfg = config.bc250.netbootNode;
+in {
+  options.bc250.netbootNode = {
+    enable = lib.mkEnableOption "BC-250 diskless-node identity and SSH control";
+
+    sshAuthorizedKeys = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [];
+      example = ["ssh-ed25519 AAAA... boot-server"];
+      description = "SSH public keys granted root access to the diskless node.";
+    };
+
+    hostnamePrefix = lib.mkOption {
+      type = lib.types.strMatching "[a-z0-9][a-z0-9-]*";
+      default = "bc250";
+      description = "Prefix for the hostname generated from the primary NIC MAC address.";
+    };
+
+    rootLogin = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Enable key-only root SSH login for fleet control.";
+    };
+
+    useDHCP = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Use DHCP for the node's network configuration.";
+    };
   };
 
-  config = {
+  config = lib.mkIf cfg.enable {
+    warnings = lib.optional (cfg.rootLogin && cfg.sshAuthorizedKeys == []) ''
+      bc250.netbootNode is enabled with key-only root SSH but no
+      sshAuthorizedKeys; the resulting node has no remote login.
+    '';
+
     services.openssh = {
       enable = true;
-      # The installer netboot profile sets these for interactive install; override
-      # to key-only for a production fleet node.
       settings = {
-        PermitRootLogin = lib.mkForce "prohibit-password";
-        PasswordAuthentication = lib.mkForce false;
+        PermitRootLogin = lib.mkForce (
+          if cfg.rootLogin
+          then "prohibit-password"
+          else "no"
+        );
+        PasswordAuthentication = lib.mkIf cfg.rootLogin (lib.mkForce false);
       };
     };
 
-    # The boot server's control key(s). Booted boards are ssh-driven with them.
-    users.users.root.openssh.authorizedKeys.keys = config.bc250.sshAuthorizedKeys;
+    users.users.root.openssh.authorizedKeys.keys = lib.mkIf cfg.rootLogin cfg.sshAuthorizedKeys;
 
-    networking.useDHCP = lib.mkDefault true;
-    # Fallback name; the service below overrides it per-MAC. All boards share the
-    # "bc250" prefix, which llmtune's discovery matches (hostname_prefix).
-    networking.hostName = lib.mkDefault "bc250";
+    networking.useDHCP = lib.mkDefault cfg.useDHCP;
+    networking.hostName = lib.mkDefault cfg.hostnamePrefix;
 
-    # Name the board <prefix>-<last-3-mac-octets> from its primary NIC, early
-    # enough that the DHCP lease carries the unique name.
     systemd.services.bc250-hostname = {
       description = "Name this BC-250 from its MAC";
-      wantedBy = [ "network-pre.target" ];
-      before = [ "network-pre.target" ];
+      wantedBy = ["network-pre.target"];
+      before = ["network-pre.target"];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
       };
-      path = [ pkgs.nettools pkgs.coreutils ];
+      path = [
+        pkgs.nettools
+        pkgs.coreutils
+      ];
       script = ''
-        # Read the primary NIC's MAC straight from sysfs, which is available even
-        # before the link is up (this runs pre-network), unlike `ip link show up`.
         mac=""
         for d in /sys/class/net/*; do
           n=$(basename "$d")
@@ -60,7 +81,7 @@
           if [ -n "$m" ] && [ "$m" != "000000000000" ]; then mac="$m"; break; fi
         done
         if [ -n "$mac" ]; then
-          hostname "bc250-''${mac: -6}"
+          hostname ${lib.escapeShellArg cfg.hostnamePrefix}-''${mac: -6}
         else
           echo "bc250-hostname: no usable NIC MAC found; leaving hostname unchanged" >&2
         fi

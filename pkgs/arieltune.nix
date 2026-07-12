@@ -6,8 +6,13 @@
 # `src` is the pinned flake input (github:cachenetics/project-ariel), passed in
 # from flake.nix; the Cargo.lock ships in the source tree. arieltune actuates
 # SMN/SMU via /sys and debugfs, so it is mostly syscalls at runtime.
-{ lib, rustPlatform, pkg-config, src, ... }:
-
+{
+  lib,
+  rustPlatform,
+  pkg-config,
+  src,
+  ...
+}:
 rustPlatform.buildRustPackage {
   pname = "arieltune";
   version = "0.1.0";
@@ -17,9 +22,9 @@ rustPlatform.buildRustPackage {
   cargoLock.lockFile = src + "/Cargo.lock";
 
   # The workspace builds several crates; we only want the top-level binary.
-  cargoBuildFlags = [ "--bin" "arieltune" ];
+  cargoBuildFlags = ["--bin" "arieltune"];
 
-  nativeBuildInputs = [ pkg-config ];
+  nativeBuildInputs = [pkg-config];
 
   doCheck = false;
 

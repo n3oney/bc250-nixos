@@ -134,9 +134,7 @@ nix build github:cachenetics/bc250-nixos#standaloneIso
 nix build github:cachenetics/bc250-nixos#desktopIso
 ```
 
-Or from a checkout of this repo, run these from the repo root (no
-`--impure` needed; see [Configure your site](#configure-your-site) for the
-one optional exception):
+Or from a checkout of this repo, run these from the repo root:
 
 ```sh
 # base netboot image (the default, no LLM stack)
@@ -213,13 +211,13 @@ On the standalone image, once installed, put your `.gguf` model files in
 The netboot images need to know a few things about your network: your ssh
 public key (REQUIRED: the image is key-only, no password login), and for
 the LLM image the NFS model export. None of that belongs in tracked files.
-There are two ways to provide it; the option set is the same for both:
+Put them in your own NixOS configuration or private consumer flake:
 
 ```nix
 {
   # Your boot server's ssh public key. REQUIRED: the image is key-only
   # (no password login), so without this there is no remote login.
-  bc250.sshAuthorizedKeys = [ "ssh-ed25519 AAAA... you@your-machine" ];
+  bc250.netbootNode.sshAuthorizedKeys = [ "ssh-ed25519 AAAA... you@your-machine" ];
 
   # LLM image only: the NFS export holding your .gguf models,
   # and which model to serve at boot.
@@ -229,7 +227,10 @@ There are two ways to provide it; the option set is the same for both:
   # Where to ship boot logs (UDP port 6666). Optional but very handy,
   # because the board is headless with no serial console.
   # Capture on that machine with: socat -u udp-recvfrom:6666,fork -
-  bc250.netconsole.targetIp = "10.0.0.10";
+  bc250.netconsole = {
+    enable = true;
+    targetIp = "10.0.0.10";
+  };
 }
 ```
 
@@ -238,33 +239,40 @@ flag overrides, model filename to flag string) and
 `bc250.netconsole.port`/`bc250.netconsole.targetMac` if the defaults do
 not suit your network.
 
-Every variant accepts the full option set and ignores what does not apply
-to it, so one site config serves all the images. The standalone image
-needs no site config at all: it has no boot server, NFS, or netconsole to
-point at.
+The standalone profile needs no site configuration: it has no boot server,
+NFS, or netconsole dependency.
 
-### Option A (recommended): your own consumer flake, fully pure
+### Consumer flake
 
-Keep your keys and addresses in a separate (private) flake that extends
-the systems this repo exports. `extendModules` inherits all of the kernel
-and GPU wiring, so your flake is just the site options:
+The primary API is `nixosModules`. The complete profiles supply the patched
+kernel and pinned input packages themselves; no overlay, `specialArgs`,
+`allowUnfree`, or impure lookup is required:
 
 ```nix
 {
   inputs.bc250-nixos.url = "github:cachenetics/bc250-nixos";
+  inputs.nixpkgs.follows = "bc250-nixos/nixpkgs";
 
-  outputs = { self, bc250-nixos, ... }: {
-    nixosConfigurations.my-node =
-      bc250-nixos.nixosConfigurations.bc250-nixos-llmtune.extendModules {
-        modules = [
-          {
-            bc250.sshAuthorizedKeys = [ "ssh-ed25519 AAAA... you@your-machine" ];
-            bc250.llamaVulkan.modelsNfs = "10.0.0.10:/srv/nfs/models";
-            bc250.llamaVulkan.modelFile = "your-model.gguf";
-            bc250.netconsole.targetIp = "10.0.0.10";
-          }
-        ];
-      };
+  outputs = { self, nixpkgs, bc250-nixos, ... }: {
+    nixosConfigurations.my-node = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        bc250-nixos.nixosModules.profile-inference-netboot
+        {
+          bc250.netbootNode.sshAuthorizedKeys = [
+            "ssh-ed25519 AAAA... you@your-machine"
+          ];
+          bc250.llamaVulkan = {
+            modelsNfs = "10.0.0.10:/srv/nfs/models";
+            modelFile = "your-model.gguf";
+          };
+          bc250.netconsole = {
+            enable = true;
+            targetIp = "10.0.0.10";
+          };
+        }
+      ];
+    };
 
     packages.x86_64-linux = {
       netbootKernel = self.nixosConfigurations.my-node.config.system.build.kernel;
@@ -275,27 +283,44 @@ and GPU wiring, so your flake is just the site options:
 }
 ```
 
-Then `nix build .#netbootKernel .#netbootRamdisk .#netbootIpxe` in YOUR
-flake, no `--impure` anywhere. The individual modules are also exported as
-`nixosModules.*` if you want to assemble a system from parts instead; if you
-go that route, set `nixpkgs.config.allowUnfree = true` yourself (the
-hardware module pulls in linux-firmware, which is unfree). Extending one of
-the `nixosConfigurations` above already sets that for you.
+Then build the three outputs in your consumer flake. For a conventional
+installed NixOS system, import the smaller `default`, `gpu-vulkan`,
+`arieltune-tune`, `llama-vulkan`, `netboot-node`, or `netconsole-debug`
+modules and enable only the features you want. `overlays.default` separately
+exports `arieltune` and `llmtune` for configurations that want the packages
+without their NixOS services.
 
-### Option B (quick local build): a gitignored `local.nix`
+For example, the reusable hardware, Vulkan, and tuning stack is:
 
-For iterating in a checkout of THIS repo: put the options in a file called
-`local.nix` next to `flake.nix`. It is gitignored, so your keys and
-addresses never end up in the repo, and because a git flake's store copy
-excludes ignored files it is picked up from the invocation directory only
-when you build with `--impure` from the repo root:
+```nix
+{
+  imports = [
+    bc250-nixos.nixosModules.default
+    bc250-nixos.nixosModules.gpu-vulkan
+    bc250-nixos.nixosModules.arieltune-tune
+  ];
 
-```sh
-nix build .#netbootKernel .#netbootRamdisk .#netbootIpxe --impure
+  hardware.bc250 = {
+    enable = true;
+    vulkan.enable = true;
+    # Explicit opt-ins; both are off in the reusable module defaults.
+    disableMitigations = false;
+    binaryCache.enable = false;
+  };
+
+  services.arieltune-tune = {
+    enable = true;
+    profile = "balanced";
+  };
+}
 ```
 
-Without `--impure` (or without a `local.nix`) the tracked placeholder
-defaults apply, which for the netboot images means no ssh login.
+The hardware module also exposes the patched `kernelPackage`, GTT size,
+compute-unit write mode, IOMMU policy, zswap, consoles, extra kernel parameters,
+and binary-cache policy. The inference module exposes its llama.cpp and llmtune
+packages, model source/directory, NFS export, model profiles, listen address,
+port, firewall policy, and server flags. All input-backed package defaults are
+overridable with ordinary NixOS options.
 
 ## Keeping it working: updates and reproducibility
 
@@ -351,25 +376,21 @@ repeating that validation (after any input bump) is
 ### Repo layout
 
 ```
-flake.nix                     inputs + the four systems + image/module outputs
+flake.nix                     inputs, self-contained module wrappers, profiles, outputs
 kernel/
   bc250-kernel.nix            the 7.0.9 cachy kernel override: config + 12 patches
   bc250-running.config        the validated kernel config
   patches/01..12-*.patch      the BC-250 liberation series (from project-ariel)
 modules/
-  bc250-hardware.nix          the pinned kernel + kernel parameters
-  netboot-node.nix            key-only root ssh + hostname-from-MAC
-  arieltune-tune.nix          apply an arieltune profile on boot
-  gpu-vulkan.nix              GPU userspace: mesa-26 RADV + vulkan-tools
-  llama-vulkan.nix            GPU inference: Vulkan llama.cpp, NFS or local models
-  netconsole-debug.nix        ship boot logs to a collector over UDP
-  rocm.nix                    opt-in gfx1010 ROCm/torch/vllm (nixosModules.rocm)
+  bc250-hardware.nix          optional kernel, memory, console, and cache policy
+  netboot-node.nix            optional key-only SSH + hostname-from-MAC
+  arieltune-tune.nix          optional arieltune profile service
+  gpu-vulkan.nix              optional mesa-26 RADV userspace
+  llama-vulkan.nix            optional Vulkan llama.cpp service, NFS or local models
+  netconsole-debug.nix        optional remote kernel/journal logging
+  rocm.nix                    optional gfx1010-compatible ROCm package set
 hosts/
-  bc250-nixos.nix             the default headless image
-  bc250-nixos-llmtune.nix     the netboot inference appliance
-  bc250-nixos-standalone.nix  the single-box local inference ISO
-  bc250-nixos-desktop.nix     the KDE Plasma desktop ISO
-  bc250-netboot-min.nix       kernel-only variant (QEMU smoke test)
+  *.nix                       thin settings for the exported image profiles
 pkgs/
   llmtune.nix  arieltune.nix  the two Rust tools, built from source
 scripts/

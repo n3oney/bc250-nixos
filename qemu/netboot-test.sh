@@ -12,7 +12,7 @@
 #
 # Usage:
 #   netboot-test.sh <kernel-bzImage> <netbootRamdisk> <netbootIpxeScript>
-#     nix build .#netbootKernel .#netbootRamdisk .#netbootIpxe --impure
+#     nix build .#netbootKernel .#netbootRamdisk .#netbootIpxe
 set -euo pipefail
 
 KERNEL="${1:?path to bzImage}"

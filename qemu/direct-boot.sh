@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Quick closure smoke: boot the NixOS netboot kernel+initrd DIRECTLY (no PXE),
 # to watch it come up and see the boot-time services (arieltune-tune, hostname,
-# llmtune-serve). Fastest iteration once `nix build` has produced the artifacts.
+# llama-server). Fastest iteration once `nix build` has produced the artifacts.
 #
 # Usage:
 #   direct-boot.sh <kernel-bzImage> <netbootRamdisk> <netbootIpxeScript>
 # where the three args are the result paths of:
-#   nix build .#netbootKernel .#netbootRamdisk .#netbootIpxe --impure
+#   nix build .#netbootKernel .#netbootRamdisk .#netbootIpxe
 #
 # The netbootIpxeScript is read only to lift the EXACT kernel cmdline it encodes
 # (init=<toplevel>/init + our kernelParams), so a direct boot matches the netboot.

@@ -14,53 +14,38 @@
 # with the standard nixos-install flow (or run it live), then put your models
 # in /var/lib/llmtune/models. The live/installed `nixos` user has the
 # placeholder password `bc250`; CHANGE IT after first login. Build with:
-#   nix build .#standaloneIso --impure
-{ config, lib, pkgs, modulesPath, ... }:
-
+#   nix build .#standaloneIso
 {
+  lib,
+  modulesPath,
+  ...
+}: {
   imports = [
     # Live + install ISO (text mode); provides config.system.build.isoImage.
     "${modulesPath}/installer/cd-dvd/installation-cd-minimal.nix"
-
-    ../modules/bc250-hardware.nix
-    ../modules/gpu-vulkan.nix
-    ../modules/arieltune-tune.nix
-    # Declares services.llmtune-serve (left disabled; llama-vulkan.nix
-    # force-disables it and owns the serving unit).
-    ../modules/llmtune-serve.nix
-    # GPU inference runtime (RADV + Vulkan llama.cpp), pointed at the LOCAL
-    # models directory below instead of an NFS export.
-    ../modules/llama-vulkan.nix
   ];
 
-  # One local.nix serves every variant: accept (and ignore) the netboot-image
-  # site options here, so a local.nix written for the netboot nodes also
-  # evaluates against this host.
-  options.bc250.netconsole = lib.mkOption {
-    type = lib.types.attrs;
-    default = { };
-    description = "Ignored on the standalone image; consumed by modules/netconsole-debug.nix on the netboot nodes.";
-  };
-  options.bc250.sshAuthorizedKeys = lib.mkOption {
-    type = lib.types.listOf lib.types.str;
-    default = [ ];
-    description = "Ignored on the standalone image; consumed by modules/netboot-node.nix on the netboot nodes.";
-  };
-
   config = {
+    hardware.bc250 = {
+      enable = true;
+      disableMitigations = true;
+      binaryCache.enable = true;
+      vulkan.enable = true;
+    };
+
     # Models come from the board's own disk, not NFS. The directory is
     # created automatically; drop .gguf files into it and use bc250-swap (or
     # llmtune) to pick what is served.
-    bc250.llamaVulkan.modelsSource = "local";
+    bc250.llamaVulkan = {
+      enable = true;
+      modelsSource = "local";
+    };
 
     # Optimize on boot, then serve.
     services.arieltune-tune = {
       enable = true;
       profile = "balanced";
     };
-
-    # The board's driving tools, usable straight from the console or ssh.
-    environment.systemPackages = [ pkgs.llmtune pkgs.arieltune ];
 
     # Normal login path for a headless box: ssh with the standard installer
     # `nixos` user. The user gets a PLACEHOLDER password instead of the
@@ -97,6 +82,6 @@
       "nvme"
     ];
 
-    system.stateVersion = "24.11";
+    system.stateVersion = lib.mkOverride 900 "24.11";
   };
 }

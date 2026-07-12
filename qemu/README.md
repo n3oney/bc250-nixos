@@ -10,7 +10,7 @@ closure, the iPXE->HTTP chain, and the boot-time services all prove out here.
 1. **qemu** (`qemu-system-x86_64`) + KVM (`/dev/kvm`).
 2. **Built artifacts**:
    ```sh
-   nix build .#netbootKernel  .#netbootRamdisk  .#netbootIpxe  --impure
+   nix build .#netbootKernel .#netbootRamdisk .#netbootIpxe
    # result -> ./result (symlink per output; use result/ paths)
    ```
 

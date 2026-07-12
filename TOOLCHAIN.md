@@ -51,5 +51,5 @@ shell hooks. Nothing else on the host is affected.
 ## Notes
 
 - Builds are pure: the kernel source is fetched by the flake
-  (nix-cachyos-kernel input), so no `--impure` is needed. The only optional
-  `--impure` use is a gitignored `local.nix` for site config (see README).
+  (nix-cachyos-kernel input), so no `--impure` is needed. Site-specific keys
+  and addresses belong in a downstream consumer flake (see README).

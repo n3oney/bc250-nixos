@@ -71,8 +71,8 @@ applied first (disjoint files, conflict not expected). If any of the 12 fails
 to apply, the failure is in the `applyPatches` phase of `linux-src-patched`;
 report the hunk, do not fuzz it.
 
-Then the images (pure; `--impure` ONLY if you use the `local.nix` site-config
-option, see README):
+Then the images (all builds are pure; site configuration belongs in a
+downstream consumer flake, see README):
 
 ```sh
 # QEMU smoke-test triple (kernel only, no Rust packages)

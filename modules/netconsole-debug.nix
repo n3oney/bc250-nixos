@@ -8,16 +8,20 @@
 #
 # Capture on the collector with e.g.:
 #   socat -u udp-recvfrom:6666,fork -
-{ config, lib, pkgs, ... }:
-
-let
-  cfg = config.bc250.netconsole;
-in
 {
+  config,
+  lib,
+  pkgs,
+  ...
+}: let
+  cfg = config.bc250.netconsole;
+in {
   options.bc250.netconsole = {
+    enable = lib.mkEnableOption "remote BC-250 kernel and journal logging with netconsole";
     targetIp = lib.mkOption {
-      type = lib.types.str;
-      default = "10.0.0.10"; # set to your log-collector/boot-server IP
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "10.0.0.10";
       description = "IPv4 address the kernel+journal boot log is shipped to (UDP).";
     };
     targetMac = lib.mkOption {
@@ -33,18 +37,32 @@ in
     };
   };
 
-  config = {
+  config = lib.mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = cfg.targetIp != null;
+        message = "bc250.netconsole.targetIp must be set when netconsole is enabled";
+      }
+    ];
+
     # Route userspace journal into the kernel ring buffer so netconsole ships it too.
     services.journald.extraConfig = "ForwardToKMsg=yes";
 
     systemd.services.netconsole-debug = {
       description = "Ship kernel+journal to the log collector via netconsole";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "network-online.target" ];
-      wants = [ "network-online.target" ];
+      wantedBy = ["multi-user.target"];
+      after = ["network-online.target"];
+      wants = ["network-online.target"];
       # Come up before the parts that might hang, so their logs are captured.
-      before = [ "llama-server.service" ];
-      path = [ pkgs.kmod pkgs.iproute2 pkgs.util-linux pkgs.coreutils pkgs.gnugrep pkgs.gawk ];
+      before = ["llama-server.service"];
+      path = [
+        pkgs.kmod
+        pkgs.iproute2
+        pkgs.util-linux
+        pkgs.coreutils
+        pkgs.gnugrep
+        pkgs.gawk
+      ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
@@ -64,10 +82,10 @@ in
         echo "$dev"            > "$t/dev_name"     2>/dev/null || true
         echo "$lip"            > "$t/local_ip"     2>/dev/null || true
         echo ${toString cfg.port} > "$t/local_port"   2>/dev/null || true
-        echo ${cfg.targetIp}   > "$t/remote_ip"    2>/dev/null || true
+        echo ${lib.escapeShellArg cfg.targetIp} > "$t/remote_ip" 2>/dev/null || true
         echo ${toString cfg.port} > "$t/remote_port"  2>/dev/null || true
         ${lib.optionalString (cfg.targetMac != null) ''
-        echo ${cfg.targetMac}  > "$t/remote_mac"   2>/dev/null || true
+          echo ${cfg.targetMac}  > "$t/remote_mac"   2>/dev/null || true
         ''}
         echo 1                 > "$t/enabled"      2>/dev/null || true
         echo "netconsole -> ${cfg.targetIp}:${toString cfg.port} via $dev ($lip)"

@@ -49,7 +49,7 @@
     system = "x86_64-linux";
     pkgs = import nixpkgs {
       inherit system;
-      config.allowUnfree = true; # linux-firmware
+      config.allowUnfree = true; # standalone package/image outputs
     };
 
     # NOTE: plain `import`, NOT callPackage. callPackage would wrap the result in
@@ -58,10 +58,14 @@
     # `features` would hit that arg-less signature and throw. Importing directly
     # keeps `bc250Kernel.override` bound to the cachy kernel's own override, which
     # threads `features`/`kernelPatches` straight into buildLinux.
-    bc250Kernel = import ./kernel/bc250-kernel.nix {
-      inherit (pkgs) lib;
-      cachyKernel = inputs.nix-cachyos-kernel.packages.${system}.linux-cachyos-bore;
-    };
+    mkBc250Kernel = modulePkgs:
+      import ./kernel/bc250-kernel.nix {
+        inherit (modulePkgs) lib;
+        cachyKernel =
+          inputs.nix-cachyos-kernel.packages.${modulePkgs.stdenv.hostPlatform.system}.linux-cachyos-bore;
+      };
+
+    bc250Kernel = mkBc250Kernel pkgs;
 
     llmtune = pkgs.callPackage ./pkgs/llmtune.nix {
       src = inputs.llmtune;
@@ -71,7 +75,14 @@
       src = inputs.arieltune + "/arieltune";
     };
 
-    overlay = _final: _prev: {inherit llmtune arieltune;};
+    packageOverlay = final: _prev: {
+      llmtune = final.callPackage ./pkgs/llmtune.nix {
+        src = inputs.llmtune;
+      };
+      arieltune = final.callPackage ./pkgs/arieltune.nix {
+        src = inputs.arieltune + "/arieltune";
+      };
+    };
 
     rocmOverlay = import ./pkgs/rocm-overlay.nix;
 
@@ -96,72 +107,182 @@
 
     llamaVulkan = inputs.llama-cpp.packages.${system}.vulkan;
 
-    # OPTIONAL site-local config: a gitignored local.nix beside this flake sets
-    # the bc250.* site options (ssh keys, NFS export, netconsole target, model
-    # overrides) without putting keys/addresses in tracked files. A git flake's
-    # store copy EXCLUDES ignored files, so the file is resolved impurely from
-    # the invocation directory: the lookup only finds it under `--impure` (in
-    # pure eval getEnv/pathExists come back empty and this is []), so the
-    # common no-site-config path stays pure. For a PURE build WITH site config,
-    # use the consumer-flake pattern instead: extendModules over these
-    # nixosConfigurations from a private downstream flake (README, "Site
-    # configuration").
-    localModules = let
-      pwd = builtins.getEnv "PWD";
-    in
-      if builtins.pathExists ./local.nix
-      then [./local.nix]
-      else if pwd != "" && builtins.pathExists (pwd + "/local.nix")
-      then [(pwd + "/local.nix")]
-      else [];
+    # Public wrappers close over flake inputs only to provide overridable
+    # package defaults. Consumers do not need overlays or specialArgs.
+    hardwareModule = {
+      lib,
+      pkgs,
+      ...
+    }: {
+      imports = [./modules/bc250-hardware.nix];
+      hardware.bc250.kernelPackage = lib.mkDefault (mkBc250Kernel pkgs);
+    };
+
+    arieltuneModule = {
+      lib,
+      pkgs,
+      ...
+    }: {
+      imports = [./modules/arieltune-tune.nix];
+      services.arieltune-tune.package = lib.mkDefault (
+        pkgs.callPackage ./pkgs/arieltune.nix {
+          src = inputs.arieltune + "/arieltune";
+        }
+      );
+    };
+
+    llamaVulkanModule = {
+      lib,
+      pkgs,
+      ...
+    }: let
+      validatedPkgs = import nixpkgs {
+        system = pkgs.stdenv.hostPlatform.system;
+        config.allowUnfree = true;
+      };
+    in {
+      imports = [./modules/llama-vulkan.nix];
+      hardware.bc250.vulkan.mesaPackage = lib.mkDefault validatedPkgs.mesa;
+      bc250.llamaVulkan = {
+        package = lib.mkDefault inputs.llama-cpp.packages.${pkgs.stdenv.hostPlatform.system}.vulkan;
+        llmtunePackage = lib.mkDefault (
+          pkgs.callPackage ./pkgs/llmtune.nix {
+            src = inputs.llmtune;
+          }
+        );
+      };
+    };
+
+    netbootProfile = {
+      imports = [
+        hardwareModule
+        ./modules/netboot-node.nix
+        ./modules/gpu-vulkan.nix
+        arieltuneModule
+        ./modules/netconsole-debug.nix
+        ./hosts/bc250-nixos.nix
+      ];
+    };
+
+    inferenceNetbootProfile = {
+      imports = [
+        netbootProfile
+        llamaVulkanModule
+        ./hosts/bc250-nixos-llmtune.nix
+      ];
+    };
+
+    desktopProfile = {
+      imports = [
+        hardwareModule
+        ./modules/gpu-vulkan.nix
+        arieltuneModule
+        ./hosts/bc250-nixos-desktop.nix
+      ];
+    };
+
+    standaloneProfile = {
+      imports = [
+        hardwareModule
+        ./modules/gpu-vulkan.nix
+        arieltuneModule
+        llamaVulkanModule
+        ./hosts/bc250-nixos-standalone.nix
+      ];
+    };
+
+    moduleApiConfiguration = nixpkgs.lib.nixosSystem {
+      inherit system;
+      modules = [
+        hardwareModule
+        ./modules/gpu-vulkan.nix
+        arieltuneModule
+        llamaVulkanModule
+        ./modules/netboot-node.nix
+        ./modules/netconsole-debug.nix
+        {
+          hardware.bc250 = {
+            enable = true;
+            vulkan.enable = true;
+          };
+          services.arieltune-tune.enable = true;
+          bc250 = {
+            llamaVulkan = {
+              enable = true;
+              modelsSource = "local";
+            };
+            netbootNode = {
+              enable = true;
+              rootLogin = false;
+            };
+            netconsole = {
+              enable = true;
+              targetIp = "192.0.2.1";
+            };
+          };
+          system.stateVersion = "24.11";
+        }
+      ];
+    };
+
+    rocmApiConfiguration = nixpkgs.lib.nixosSystem {
+      inherit system;
+      modules = [
+        ./modules/rocm.nix
+        {
+          hardware.bc250.rocm.enable = true;
+          system.stateVersion = "24.11";
+        }
+      ];
+    };
+
+    profileOverrideConfigurations = {
+      inference = nixpkgs.lib.nixosSystem {
+        inherit system;
+        modules = [
+          inferenceNetbootProfile
+          {
+            bc250.llamaVulkan.modelsNfs = "192.0.2.10:/srv/models";
+            system.stateVersion = "25.11";
+          }
+        ];
+      };
+      desktop = nixpkgs.lib.nixosSystem {
+        inherit system;
+        modules = [
+          desktopProfile
+          {system.stateVersion = "25.11";}
+        ];
+      };
+      standalone = nixpkgs.lib.nixosSystem {
+        inherit system;
+        modules = [
+          standaloneProfile
+          {system.stateVersion = "25.11";}
+        ];
+      };
+    };
 
     # The DEFAULT image: the liberated board with the arieltune tuning suite
     # but WITHOUT the LLM stack. Kernel + Vulkan GPU + arieltune + ssh node
     # identity. No llmtune/llama.cpp, no model NFS.
     bc250-nixos = nixpkgs.lib.nixosSystem {
       inherit system;
-      specialArgs = {inherit bc250Kernel;};
-      modules =
-        [
-          {
-            nixpkgs.overlays = [overlay];
-            nixpkgs.config.allowUnfree = true;
-          }
-          ./hosts/bc250-nixos.nix
-        ]
-        ++ localModules;
+      modules = [netbootProfile];
     };
 
     # The netboot inference appliance: arieltune-tuned on boot, Vulkan
     # llama.cpp serving GGUF models over NFS, driven by llmtune.
     bc250-nixos-llmtune = nixpkgs.lib.nixosSystem {
       inherit system;
-      specialArgs = {inherit bc250Kernel llamaVulkan;};
-      modules =
-        [
-          {
-            nixpkgs.overlays = [overlay];
-            nixpkgs.config.allowUnfree = true;
-          }
-          ./hosts/bc250-nixos-llmtune.nix
-        ]
-        ++ localModules;
+      modules = [inferenceNetbootProfile];
     };
 
     # The local KDE Plasma desktop, as a live + Calamares install ISO, with
     # arieltune for tuning the board from the desktop. No LLM stack.
     bc250-nixos-desktop = nixpkgs.lib.nixosSystem {
       inherit system;
-      specialArgs = {inherit bc250Kernel;};
-      modules =
-        [
-          {
-            nixpkgs.overlays = [overlay];
-            nixpkgs.config.allowUnfree = true;
-          }
-          ./hosts/bc250-nixos-desktop.nix
-        ]
-        ++ localModules;
+      modules = [desktopProfile];
     };
 
     # The standalone single-box inference appliance: a headless live/install
@@ -170,60 +291,79 @@
     # no fleet.
     bc250-nixos-standalone = nixpkgs.lib.nixosSystem {
       inherit system;
-      specialArgs = {inherit bc250Kernel llamaVulkan;};
-      modules =
-        [
-          {
-            nixpkgs.overlays = [overlay];
-            nixpkgs.config.allowUnfree = true;
-          }
-          ./hosts/bc250-nixos-standalone.nix
-        ]
-        ++ localModules;
+      modules = [standaloneProfile];
     };
 
     # Our kernel + netboot, NO llmtune/arieltune: boots our 7.0.9 in QEMU
     # without depending on the Rust packages.
     bc250-netboot-min = nixpkgs.lib.nixosSystem {
       inherit system;
-      specialArgs = {inherit bc250Kernel;};
-      modules = [./hosts/bc250-netboot-min.nix];
+      modules = [
+        hardwareModule
+        ./hosts/bc250-netboot-min.nix
+      ];
     };
   in {
     nixosConfigurations = {
-      inherit bc250-nixos bc250-nixos-llmtune bc250-nixos-desktop bc250-nixos-standalone bc250-netboot-min;
+      inherit
+        bc250-nixos
+        bc250-nixos-llmtune
+        bc250-nixos-desktop
+        bc250-nixos-standalone
+        bc250-netboot-min
+        ;
     };
 
-    # The building blocks, for downstream flakes that want to assemble their
-    # own system instead of extending one of the nixosConfigurations above.
-    # NOTE: bc250-hardware expects `bc250Kernel` and llama-vulkan/llmtune-serve
-    # expect `llamaVulkan` via specialArgs; the RECOMMENDED way to add private
-    # site config (ssh keys, NFS export, netconsole target) is
-    # `nixosConfigurations.<name>.extendModules { modules = [ ... ]; }` from a
-    # private consumer flake, which inherits all of that wiring. See README,
-    # "Site configuration".
-    #
-    # Assembling a system from these parts (instead of extendModules over a
-    # nixosConfiguration) means YOU must set `nixpkgs.config.allowUnfree =
-    # true`: bc250-hardware pulls in linux-firmware (unfree). The
-    # nixosConfigurations above and their extendModules already set it.
-    # llmtune-serve is intentionally NOT exported: it is the legacy NFS-serve
-    # path, superseded by llama-vulkan.nix (which mkForce-disables it), so
-    # wiring it into a fresh system would be a footgun.
+    # The primary public API. Input-backed package defaults are provided by the
+    # wrappers, so every module can be consumed without specialArgs or overlays.
     nixosModules = {
-      bc250-hardware = ./modules/bc250-hardware.nix;
+      default = hardwareModule;
+      bc250-hardware = hardwareModule;
       netboot-node = ./modules/netboot-node.nix;
-      arieltune-tune = ./modules/arieltune-tune.nix;
+      arieltune-tune = arieltuneModule;
       gpu-vulkan = ./modules/gpu-vulkan.nix;
-      llama-vulkan = ./modules/llama-vulkan.nix;
+      llama-vulkan = llamaVulkanModule;
       netconsole-debug = ./modules/netconsole-debug.nix;
       rocm = ./modules/rocm.nix;
+      profile-netboot = netbootProfile;
+      profile-inference-netboot = inferenceNetbootProfile;
+      profile-desktop = desktopProfile;
+      profile-standalone = standaloneProfile;
     };
 
-    overlays.rocm = rocmOverlay;
+    overlays = {
+      default = packageOverlay;
+      rocm = rocmOverlay;
+    };
+
+    formatter.${system} = pkgs.alejandra;
+
+    checks.${system} = {
+      module-api = pkgs.writeText "bc250-module-api-check" (
+        builtins.toJSON {
+          kernelVersion = moduleApiConfiguration.config.boot.kernelPackages.kernel.version;
+          vulkanIcd = moduleApiConfiguration.config.environment.variables.VK_DRIVER_FILES;
+          arieltuneExec =
+            moduleApiConfiguration.config.systemd.services.arieltune-tune.serviceConfig.ExecStart;
+          llamaExec = moduleApiConfiguration.config.systemd.services.llama-server.serviceConfig.ExecStart;
+          hostname = moduleApiConfiguration.config.networking.hostName;
+          netconsoleTarget = moduleApiConfiguration.config.bc250.netconsole.targetIp;
+          inferenceModelsNfs = profileOverrideConfigurations.inference.config.bc250.llamaVulkan.modelsNfs;
+          inferenceStateVersion = profileOverrideConfigurations.inference.config.system.stateVersion;
+          desktopStateVersion = profileOverrideConfigurations.desktop.config.system.stateVersion;
+          standaloneStateVersion = profileOverrideConfigurations.standalone.config.system.stateVersion;
+        }
+      );
+      rocm-module-api = pkgs.writeText "bc250-rocm-module-api-check" rocmApiConfiguration.config.environment.variables.HSA_OVERRIDE_GFX_VERSION;
+    };
 
     packages.${system} = {
-      inherit bc250Kernel llmtune arieltune llamaVulkan;
+      inherit
+        bc250Kernel
+        llmtune
+        arieltune
+        llamaVulkan
+        ;
 
       # gfx1010 PyTorch ML env. Build with:
       #   nix build .#rocmPython
